@@ -1,0 +1,272 @@
+#include <stdint.h>
+#include <math.h>
+#include "msp.h"
+#include "inc/Clock.h"
+#include "inc/CortexM.h"
+#include "inc/GPIO.h"
+#include "inc/EUSCI_A0_UART.h"
+#include "inc/Motor.h"
+#include "inc/SysTick_Interrupt.h"
+#include "inc/Timer_A1_Interrupt.h"
+#include "inc/Timer_A2_PWM.h"
+#include "inc/BLE_UART.h"
+#include "inc/CRUISE_CONTROL.h"
+
+
+/**
+ * main.c
+ */
+void TRIGER_GENERATOR_INIT(void);
+void TA2_N_IRQHandler(void);
+void Process_BLE_UART_Data(char BLE_UART_Buffer[]);
+uint16_t median_filer_3pt(uint16_t pt1, uint16_t pt2, uint16_t pt3);
+uint16_t raw_distance_filter(uint16_t raw_data);
+
+
+volatile uint16_t time_sent;
+volatile uint16_t time_receive;
+volatile uint8_t  echo_status;
+
+
+void main(void)
+{
+	//WDT_A->CTL = WDT_A_CTL_PW | WDT_A_CTL_HOLD;		// stop watchdog timer
+
+    // Initialize the 48 MHz Clock
+        Clock_Init48MHz();
+
+        // Initialize the built-in red LED and the RGB LEDs
+        LED1_Init();
+        LED2_Init();
+
+        // Initialize the user buttons
+        Buttons_Init();
+
+        // Initialize the front and back LEDs on the chassis board
+        Chassis_Board_LEDs_Init();
+
+        // Initialize EUSCI_A0_UART
+        EUSCI_A0_UART_Init_Printf();
+        BLE_UART_Init();
+        CRUISE_CONTROL_INIT();//Initiates the CRUISE_CONTROL Variables
+
+        // Initialize the SysTick timer to generate periodic interrupts every 1 ms
+      //  SysTick_Interrupt_Init(SYSTICK_INT_NUM_CLK_CYCLES, SYSTICK_INT_PRIORITY);
+
+        // Initialize Timer A2 with a period of 50 Hz
+        // Timer A2 will be used to drive two servos
+        Timer_A2_PWM_Init(TIMER_A2_PERIOD_CONSTANT, 0, 0); //
+
+        // Initialize the bumper switches which will be used to generate external I/O-triggered in
+        //Bumper_Switches_Init(&Bumper_Switches_Handler);
+
+        // Initialize the DC motors
+        Motor_Init();
+
+        // Enable the interrupts used by the SysTick and Timer A1 timers
+
+        char BLE_UART_Buffer[BLE_UART_BUFFER_SIZE] = {0};
+        NVIC_EnableIRQ(TA2_N_IRQn);
+        EnableInterrupts();
+        //uint16_t Converted_Distance_Center = (TIMER_A2->CCR[1])*(0.340/2);
+        uint16_t delta, raw_data_mm, filtered_rd_mm ;
+
+        Clock_Delay1ms(1000);
+        BLE_UART_Reset();
+
+        BLE_UART_OutString("HC-O5 UART Active\r\n");
+        Clock_Delay1ms(1000);
+
+
+
+
+        while (1)
+        {
+            TRIGER_GENERATOR_INIT();
+
+            if (echo_status) {
+                echo_status = 0;
+                delta = (uint16_t)(time_receive - time_sent);
+                raw_data_mm      = (delta * 10) / 58;
+                filtered_rd_mm   = raw_distance_filter(raw_data_mm);
+            }
+
+            //CRUISE_CONTROL(filtered_rd_mm);
+            if (SDK_STATE == AVOID)
+            {
+                AVOID_COMMAND(filtered_rd_mm);
+            }
+            else if (SDK_STATE == CRUISE)
+            {
+                CRUISE_CONTROL(filtered_rd_mm);
+            }
+            else if (SDK_STATE==MANUAL)
+            {
+
+            }
+            else if (SDK_STATE==IDLE)
+            {
+                Motor_Stop();
+            }
+
+
+
+
+            int string_size = BLE_UART_InString(BLE_UART_Buffer, BLE_UART_BUFFER_SIZE);
+
+            if (string_size > 0)
+            {
+
+                printf("HC-05 UART Data: %s\n", BLE_UART_Buffer);
+                Process_BLE_UART_Data(BLE_UART_Buffer);
+            }
+
+            printf(" Center: %d\n", filtered_rd_mm);
+
+
+            Clock_Delay1us(100);
+        }
+
+
+
+}
+
+void TRIGER_GENERATOR_INIT(void)
+{
+
+    P5->SEL0 &= ~0x40;
+    P5->SEL1 &= ~0x40;
+    P5->DIR |= 0x40;
+
+
+    P5->OUT |= 0x40;
+
+    Clock_Delay1us(30);
+
+    P5->OUT &= ~0x40;
+    Clock_Delay1us(50);
+
+
+
+}
+
+void TA2_N_IRQHandler(void)
+{
+    uint16_t iv = TIMER_A2->IV;
+
+    if (iv == 0x0004)             // CCR2 caused interrupt
+    {
+        uint16_t time = TIMER_A2->CCR[2];
+
+        if (TIMER_A2->CCTL[2] & 0x0008)   // CCI bit (input level)
+        {
+            time_sent = time;     // rising edge
+        }
+        else
+        {
+            time_receive = time;  // falling edge
+            echo_status = 1;      // pulse complete
+        }
+    }
+}
+
+
+
+
+uint16_t median_filer_3pt(uint16_t pt1, uint16_t pt2, uint16_t pt3)
+{
+
+if(pt1>pt2)
+{
+uint16_t temp =pt1;
+pt1=pt2;
+pt2=temp;
+}
+
+if(pt2>pt3)
+{
+uint16_t temp =pt2;
+pt2=pt3;
+pt3=temp;
+}
+
+if(pt1>pt2)
+{
+uint16_t temp =pt1;
+pt1=pt2;
+pt2=temp;
+}
+
+return pt2;
+}
+
+uint16_t raw_distance_filter(uint16_t raw_data0)
+{
+  static  uint16_t raw_data1;
+  static  uint16_t raw_data2;
+  static  uint16_t raw_data3;
+
+    raw_data1=raw_data2;
+    raw_data2=raw_data3;
+    raw_data3=raw_data0;
+    return median_filer_3pt(raw_data1, raw_data2, raw_data3);
+}
+
+void Process_BLE_UART_Data(char BLE_UART_Buffer[])
+{
+    if (Check_BLE_UART_Data(BLE_UART_Buffer, "C"))
+    {
+
+        LED2_Output(RGB_LED_GREEN);
+        SDK_STATE=CRUISE;
+
+
+    }
+    else if (Check_BLE_UART_Data(BLE_UART_Buffer, "A"))
+    {
+        LED2_Output(RGB_LED_WHITE);
+        SDK_STATE=AVOID;
+
+
+    }
+    else if (Check_BLE_UART_Data(BLE_UART_Buffer, "R"))
+    {
+        SDK_STATE=MANUAL;
+        LED2_Output(RGB_LED_BLUE);
+                Motor_Right(1501, 1501);
+
+    }
+    else if (Check_BLE_UART_Data(BLE_UART_Buffer, "L"))
+      {
+        SDK_STATE=MANUAL;
+        LED2_Output(RGB_LED_SKY_BLUE);
+                  Motor_Left(1501, 1501);
+
+      }
+    else if (Check_BLE_UART_Data(BLE_UART_Buffer, "B"))
+          {
+        SDK_STATE=MANUAL;
+        LED2_Output(RGB_LED_YELLOW);
+                      Motor_Backward(1501, 1501);
+
+          }
+    else if (Check_BLE_UART_Data(BLE_UART_Buffer, "F"))
+              {
+        SDK_STATE=MANUAL;
+        LED2_Output(RGB_LED_PINK);
+                          Motor_Forward(1501, 1501);
+
+              }
+
+    else if (Check_BLE_UART_Data(BLE_UART_Buffer, "S"))
+    {
+        LED2_Output(RGB_LED_RED);
+        SDK_STATE=IDLE;
+        Motor_Stop();
+    }
+
+    else {
+        printf("HC-05 UART Command Not Found\n");
+    }
+}
+

@@ -1,0 +1,162 @@
+/*
+ * CRUISE_CONTROL.c
+ *
+ *  Created on: Nov 30, 2025
+ *      Author: malver
+ */
+
+#include "inc/CRUISE_CONTROL.h"
+#include "inc/MOTOR.h"
+#include "inc/GPIO.h"
+#include "msp.h"
+
+#define CRUISE_DIST 1000
+#define CRUISE_MIN_DIST 200
+#define CRUISE_MAX_DIST 1500
+#define MIN_DUTY 1500
+#define MAX_DUTY 13500 // 90% of 15000
+
+#define PI_DELTA 0.000100f //time step loop update rate=50ms
+#define P_GAIN 1.8f// Proportional gaIn
+#define I_GAIN 4.5f //Integral gain
+
+volatile STATE_T SDK_STATE=IDLE;
+volatile AVOID_STATE_T SDK_AVOID_STATE=AVOID_IDLE;
+static float pi_int =0.0f;// Proportional integral
+//static float prev_duty=0.0f;// previous duty cycle
+
+static float CHECK_RANGE(float NOMINAL, float MIN_RANGE, float MAX_RANGE)
+{
+if(NOMINAL>MAX_RANGE) return MAX_RANGE;
+if (NOMINAL<MIN_RANGE) return MIN_RANGE;
+return NOMINAL;
+}
+
+void CRUISE_CONTROL_INIT(void)
+{
+pi_int=0.0f;
+//prev_duty=0.0f;
+SDK_STATE=IDLE;
+}
+void CRUISE_CONTROL(uint16_t distance_mm)
+{
+    float command_duty=0.0f;
+    float dist_mm=(float)distance_mm;
+    if (SDK_STATE!=IDLE)//check if idle
+    {
+        Motor_Stop();
+        pi_int=0.0f;
+       // prev_duty=0.0f;
+        return;
+    }
+
+
+    if(dist_mm<CRUISE_MIN_DIST)
+    {
+        pi_int=0.0f;
+        command_duty=0;
+        Motor_Stop();
+       // prev_duty=command_duty;
+        return;
+    }
+
+    dist_mm=CHECK_RANGE(dist_mm, CRUISE_MIN_DIST, CRUISE_MAX_DIST);
+    float error=dist_mm-CRUISE_DIST;
+    float p_control = P_GAIN*error;
+    pi_int += I_GAIN*error*PI_DELTA;
+    float control_out=p_control+pi_int;
+
+    control_out=CHECK_RANGE(control_out, MIN_DUTY, MAX_DUTY);
+     if(control_out==MAX_DUTY)
+     {
+        pi_int=MAX_DUTY-p_control;
+     }
+     if(control_out==MIN_DUTY)
+         {
+            pi_int=MIN_DUTY-p_control;
+         }
+
+     command_duty=control_out;
+     //prev_duty=command_duty;
+
+    uint16_t controlled_duty=(uint16_t)command_duty;
+    Motor_Forward(controlled_duty, controlled_duty);
+
+
+
+}
+
+void AVOID_COMMAND(uint16_t distance_mm)
+{
+    float dist_mm=(float)distance_mm;
+
+
+    if (SDK_STATE != AVOID)
+       {
+        SDK_AVOID_STATE = AVOID_IDLE;
+           Motor_Stop();
+           return;
+       }
+
+   switch(SDK_AVOID_STATE)
+   {
+
+   case AVOID_IDLE:
+
+        Motor_Left(3000, 3000);
+        SDK_AVOID_STATE=CHECK_LEFT;
+        LED2_Output(RGB_LED_SKY_BLUE);
+        break;
+
+   case CHECK_LEFT:
+       if(dist_mm>CRUISE_MIN_DIST)
+       {
+           Motor_Stop();
+           SDK_STATE=CRUISE;
+           //Motor_Forward(600, 600);
+           LED2_Output(RGB_LED_BLUE);
+           return;
+       }
+
+       LED2_Output(RGB_LED_SKY_BLUE);
+       Motor_Right(3000, 3000);
+       SDK_AVOID_STATE=CHECK_RIGHT_180;
+
+       break;
+
+   case CHECK_RIGHT_180:
+       if(dist_mm>CRUISE_MIN_DIST)
+       {
+           Motor_Stop();
+           //Motor_Forward(600, 600);
+           SDK_STATE=CRUISE;
+       }
+       Motor_Right(3000, 3000);
+       SDK_AVOID_STATE=CHECK_RIGHT_90;
+       break;
+
+   case CHECK_RIGHT_90:
+       if (dist_mm>CRUISE_MIN_DIST)
+       {
+           Motor_Stop();
+           SDK_STATE=CRUISE;
+           //Motor_Forward(600, 600);
+           return;
+       }
+       Motor_Right(3000, 3000);
+       SDK_AVOID_STATE=DONE;
+              break;
+   case DONE:
+
+
+           SDK_STATE=CRUISE;
+           break;
+
+
+   }
+
+
+}
+
+
+
