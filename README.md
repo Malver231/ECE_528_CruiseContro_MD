@@ -44,6 +44,10 @@ IDLE     CRUISE     AVOID     MANUAL.
  The CRUISE state uses PI control to maintain distance. When the robot detects that it is too close to an obstacle, it transitions into the AVOID state. A non-blocking state machine evaluates left and right directions using live ultrasonic readings until a clear path is found. Bluetooth commands allow manual override by transitioning into the MANUAL state, where direct motor commands are executed.
 This combination of sensing, closed-loop control, and state-based decision-making forms the foundation of the robot’s autonomous behavior.
 
+VIDEO DEMO
+
+https://drive.google.com/file/d/12xgb2BJTQVRUPiLJKEoVEydu8y4ep8Ng/view?usp=sharing
+
 COMPONENTS USED
 
 <img width="1237" height="370" alt="image" src="https://github.com/user-attachments/assets/7c7d28b6-9b3d-42eb-9747-78e73175c648" />
